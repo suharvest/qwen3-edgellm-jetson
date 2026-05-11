@@ -14,5 +14,8 @@ __pycache__/
 artifacts/
 !deploy/artifacts/
 !deploy/artifacts/qwen3_manifest.json
+# Audio evidence for perf reports — tracked despite the *.wav rule above
+!docs/audio-evidence/
+!docs/audio-evidence/*.wav
 models/
 engines/
