@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+*.engine
+*.onnx
+*.data
+*.safetensors
+*.bin
+*.npz
+*.wav
+*.tar.gz
+*.log
+artifacts/
+models/
+engines/
