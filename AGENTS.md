@@ -75,6 +75,10 @@ Use `docs/reproduce-from-zero.md` as the source of truth. Keep it aligned with:
 The highperf path must use the EdgeLLM fork branch
 `qwen3-tts-highperf-runtime-w8a16`; EdgeLLM `main` is not enough.
 
+Open `docs/reproduction-remaining-work-2026-05-11.md` before assigning or
+starting follow-up reproduction tasks. It lists what is done, what still needs
+clean-room validation, and what should not be re-tried.
+
 ## Validation
 
 Before committing script changes:

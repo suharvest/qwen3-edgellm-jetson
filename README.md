@@ -47,6 +47,7 @@ rm -f build*/examples/utils/libexampleUtils.a \
 - `scripts/`: export, engine build, quantization, stateful Code2Wav, quality gate, and V2V scripts.
 - `docs/performance/`: frozen performance records across Orin Nano/NX.
 - `docs/reproduce-from-zero.md`: step-by-step reproduction checklist for a new machine.
+- `docs/reproduction-remaining-work-2026-05-11.md`: remaining packaging and validation work for follow-up agents.
 - `docs/plans/`: implementation notes and negative results that should not be rediscovered.
 - `docs/export-from-official-weights.md`: official Qwen3 weight -> ONNX export guide.
 - `AGENTS.md`: concise operating guide for coding agents working in this repo.
