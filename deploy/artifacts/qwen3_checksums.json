@@ -2,9 +2,109 @@
   "artifact_sets": {
     "orin-nano-highperf-2026-05-10": {
       "files": {
+        "engines/orin-nano/highperf/asr_audio_encoder/audio/audio_encoder.engine": {
+          "sha256": "612ea622a96aa4f2bc3ba28842b1585c8c45a444cb982220fd26fe53e0e5de0b",
+          "size_bytes": 377938780
+        },
+        "engines/orin-nano/highperf/asr_audio_encoder/audio/config.json": {
+          "sha256": "4bc4c1a2d6caa5b9a67edfa18d195afb902d8327a5432869a07e49150548e9e4",
+          "size_bytes": 4007
+        },
+        "engines/orin-nano/highperf/asr_thinker_full_fp8embed/config.json": {
+          "sha256": "a1acdce6305c0c0387c9579f5f45cf46d5e7c47c67ee8822bb7c1d088992798b",
+          "size_bytes": 891
+        },
+        "engines/orin-nano/highperf/asr_thinker_full_fp8embed/embedding.safetensors": {
+          "sha256": "d36c095aa89c56d4a28e264fbb167439e6d54a7a0c6b8aa025eea24f44259974",
+          "size_bytes": 160444600
+        },
+        "engines/orin-nano/highperf/asr_thinker_full_fp8embed/llm.engine": {
+          "sha256": "69dcf3c83c94202d1b92a2e04e1214ba286a0c1f8682b97aaab5a80406772434",
+          "size_bytes": 1203582436
+        },
+        "engines/orin-nano/highperf/asr_thinker_full_fp8embed/processed_chat_template.json": {
+          "sha256": "5468a4f6656f0dd94145790865a68211c084e3bff689845a716d6320a19dcb0f",
+          "size_bytes": 670
+        },
+        "engines/orin-nano/highperf/asr_thinker_full_fp8embed/tokenizer.json": {
+          "sha256": "fe1fad59be22a41ee293363fcf95fdedbc7c93f3b49270b1d2e18bd1399a7a05",
+          "size_bytes": 11429653
+        },
+        "engines/orin-nano/highperf/asr_thinker_full_fp8embed/tokenizer_config.json": {
+          "sha256": "45ee936f6ac8b9d84e82182c455b9f9db66da24a58a41e649254c059dbd7d12f",
+          "size_bytes": 1018
+        },
+        "engines/orin-nano/highperf/code2wav_stateful/code2wav_stateful.engine": {
+          "sha256": "590955c67984744c76cec65947c93696df885f59b3ae5d58f62a56a5b684e4b8",
+          "size_bytes": 233668036
+        },
+        "engines/orin-nano/highperf/code2wav_stateful/config.json": {
+          "sha256": "99ffc317c4a5cbde2b415797044450324efa2fe2b0954e6d8c07d45e3d97c643",
+          "size_bytes": 1290
+        },
+        "engines/orin-nano/highperf/code_predictor/cp_dir/codec_embeddings.safetensors": {
+          "sha256": "3b4b0c11aedf56fd976c8d6327ebf1bf08ab10dcba77baa30006dba52e6f596f",
+          "size_bytes": 62915840
+        },
+        "engines/orin-nano/highperf/code_predictor/cp_dir/config.json": {
+          "sha256": "ef502be01b46dac7186d11cdba1da163c730b306b7e724a85cebdc2c65166624",
+          "size_bytes": 670
+        },
+        "engines/orin-nano/highperf/code_predictor/cp_dir/cp_embed_fp32.bin": {
+          "sha256": "42cb602d0be48b27b097d10c1acec33cbf633e808c54add163f4c710a5549230",
+          "size_bytes": 125829120
+        },
+        "engines/orin-nano/highperf/code_predictor/cp_dir/lm_heads.safetensors": {
+          "sha256": "ed692b72292d6f2e21fbcbee60d8ade53cda0bcbd0ae693a5decc1ee2b2dfafd",
+          "size_bytes": 62915920
+        },
+        "engines/orin-nano/highperf/code_predictor/cp_dir/qwen3_tts_cp.engine": {
+          "sha256": "c25c11e7ef3b70c369cc50a5d59e5e03b8fdc7bb953c3525022b9c23eb6ebfba",
+          "size_bytes": 221776732
+        },
+        "engines/orin-nano/highperf/code_predictor/cp_dir/small_to_mtp_projection.safetensors": {
+          "sha256": "44047d1682d8aa598503de5d7488832d99a09cb676cc0dca31768303f41b9984",
+          "size_bytes": 2099352
+        },
+        "engines/orin-nano/highperf/talker_w8a16_outputk/talker_decode_w8a16_outputk.engine": {
+          "sha256": "2cf80c8806053273566afe9e38f3bd9a319e570c12d51ba9a650964dc95955ae",
+          "size_bytes": 459334284
+        },
         "tts/speaker_encoder/speaker_encoder.onnx": {
           "sha256": "544da28fd7463a3fd722d54630fe39b730376b6aee850ca66845ee981e87a40f",
           "size_bytes": 35588164
+        },
+        "tts/talker/codec_embed_fp32.bin": {
+          "sha256": "0aa7fcf705e803869dcbb1bf9cf6171020aba4313a04854632072683b85606fc",
+          "size_bytes": 12582912
+        },
+        "tts/talker/config.json": {
+          "sha256": "34867bbbc693e70f12c86051cb53162fab18ce6ca223f9b316d40120d3821f45",
+          "size_bytes": 1506
+        },
+        "tts/talker/embedding.safetensors": {
+          "sha256": "d2888bc1b162465c31846f997905f350b07a9c2312b1b7703a419081015d3235",
+          "size_bytes": 6291544
+        },
+        "tts/talker/text_embedding.safetensors": {
+          "sha256": "8e43bece7de6f79d93031ba7818a78d6be505fa89c503ed967d65211fffaba21",
+          "size_bytes": 320889024
+        },
+        "tts/talker/text_projection.safetensors": {
+          "sha256": "36374339a7782bf58dc13cacaec73062f3ed61bc33ed7476a7f83b89959ebf3c",
+          "size_bytes": 12589408
+        },
+        "tts/tokenizer/processed_chat_template.json": {
+          "sha256": "5468a4f6656f0dd94145790865a68211c084e3bff689845a716d6320a19dcb0f",
+          "size_bytes": 670
+        },
+        "tts/tokenizer/tokenizer.json": {
+          "sha256": "a7d41145c408f3062e824f965be1c29854cd809e111cdf8170aa8b0bcd5d1fab",
+          "size_bytes": 11424262
+        },
+        "tts/tokenizer/tokenizer_config.json": {
+          "sha256": "45ee936f6ac8b9d84e82182c455b9f9db66da24a58a41e649254c059dbd7d12f",
+          "size_bytes": 1018
         }
       }
     },
