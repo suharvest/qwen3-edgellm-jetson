@@ -120,6 +120,20 @@ Quality check:
 
 Note: the Python backend still logs `Code2Wav not found at .../tokenizer_decoder/code2wav.engine` because the highperf path supplies stateful Code2Wav via `EDGE_LLM_TTS_STATEFUL_CODE2WAV_ENGINE_DIR`. The warning is expected for this configuration, but should be cleaned up later to reduce confusion.
 
+### 2026-05-11 Highperf TTS Voice Clone Smoke
+
+Orin NX was checked with the already validated highperf worker/plugin pair:
+
+- Worker: `/tmp/qwen3_highperf_bin/qwen3_tts_worker`
+- Plugin: `/tmp/qwen3_highperf_bin/libNvInfer_edgellm_plugin.so`
+- TTS artifacts: `/tmp/qwen3_hf_upload_nx_0511`
+- Mode: `stream=true`, `stream_only=true`, stateful Code2Wav, `first_chunk_frames=4`, `chunk_frames=10`
+- Request: short Chinese text plus `speaker_embedding_b64` float32 vector
+
+Result: `ok=true`, `chunk_count=2`, `audio_complete=true`, `first_chunk_ms=658.8`, `total_ms=1014.1`, `audio_s=0.8`, `rtf=1.27`.
+
+This is a protocol/runtime smoke only. It proves the highperf streaming worker accepts a precomputed speaker embedding and emits connected stream chunks. It is not an audio quality gate because the smoke used a synthetic embedding.
+
 ### NX 40W Locked Run
 
 Date: 2026-05-11.

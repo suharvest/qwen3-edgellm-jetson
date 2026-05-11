@@ -25,7 +25,21 @@ Use these TensorRT-Edge-LLM fork branches:
 - `official-qwen3-tts-upstream-runtime`: minimal-diff correctness/runtime branch for upstream review.
 - `qwen3-tts-highperf-runtime-w8a16`: product high-performance branch used by the current Orin highperf artifacts.
 
-The highperf branch includes the runtime pieces required by the measured path: explicit Qwen3-TTS backend without duplicate generic Talker load, W8A16 plugin/runtime support, CP runtime optimizations, stateful Code2Wav runner, and optional Code2Wav timing profile via `QWEN3_TTS_CODE2WAV_PROFILE=1`.
+The highperf branch includes the runtime pieces required by the measured path: explicit Qwen3-TTS backend without duplicate generic Talker load, W8A16 plugin/runtime support, CP runtime optimizations, GPU CP kernels, stateful Code2Wav runner, and optional Code2Wav timing profile via `QWEN3_TTS_CODE2WAV_PROFILE=1`.
+
+Do not deploy highperf artifacts against EdgeLLM `main`. A correct checkout must contain:
+
+- `cpp/plugins/w8A16LinearPlugin/`
+- `cpp/kernels/qwen3TtsCpKernels/`
+- `cpp/multimodal/statefulCode2WavRunner.*`
+- highperf Qwen3-TTS worker support for `speaker_embedding_b64`
+
+After changing CUDA sources, clean stale device-link outputs before rebuilding examples:
+
+```bash
+rm -f build*/examples/utils/libexampleUtils.a \
+      build*/examples/utils/CMakeFiles/exampleUtils.dir/cmake_device_link.o
+```
 
 ## Contents
 
@@ -56,7 +70,9 @@ dependencies, and highperf post-processing details.
 
 HF repo: <https://huggingface.co/harvestsu/qwen3-edgellm-jetson-artifacts>
 
-Expected artifact layout and required files are recorded in `deploy/artifacts/qwen3_manifest.json`. Fill checksums and file sizes after uploading the Nano/NX engine sets.
+Expected artifact layout and required files are recorded in `deploy/artifacts/qwen3_manifest.json`. The shared `tts/tokenizer/` directory must include `tokenizer.json`, `tokenizer_config.json`, and `processed_chat_template.json`; missing sidecars break the C++ tokenizer load on a from-zero device.
+
+Runtime binaries and plugins are built from the EdgeLLM fork or delivered by the runtime image. The model artifact repo intentionally stores engines and model sidecars, not a random local plugin copied from `/tmp`.
 
 ## Jetson Voice Integration
 
@@ -86,3 +102,5 @@ uvicorn app.main:app --host 0.0.0.0 --port 8621
 ## Current Baseline
 
 See `docs/performance/qwen3-orin-profiles-2026-05-10.md` for the latest frozen numbers. At the time of repo creation, Orin NX highperf V2V smoke remained exact with warm `EOS -> first audio` around `611-637 ms` using the already validated engine set.
+
+Highperf TTS voice cloning is embedding-based: extract a speaker x-vector once with the Qwen3-TTS `speaker_encoder.onnx`, then pass `speaker_embedding_b64` to the resident TTS worker. The low-latency path should not run the speaker encoder on every synthesis request.
