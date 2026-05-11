@@ -68,6 +68,23 @@ Do not use EdgeLLM `main` for highperf artifacts. It does not contain the W8A16
 plugin, Qwen3-TTS CP kernels, stateful Code2Wav runner, and speaker embedding
 worker support required by this profile.
 
+The published `orin-{nx,nano}-highperf-2026-05-10/11` engines were validated
+against a specific W8A16 kernel set (`w8a16_m1_output_k_kernel`,
+`w8a16_hmma_m16n16k16_kernel`, `w8a16_small_m_tiled_kernel`,
+`w8a16_per_output_output_k_reference_kernel`,
+`w8a16_per_output_reference_kernel`). Commits `8a26eba` and `7ab7f1c` on
+this branch carry those kernels and the matching plugin dispatcher. After
+building, you can confirm the right kernel set is linked with:
+
+```bash
+nm build/libNvInfer_edgellm_plugin.so | grep -oE 'w8a16_[a-z0-9_]+_kernel' | sort -u
+```
+
+Five symbols must appear, matching the names above. If you see
+`w8a16_per_output_tiled_kernel` / `w8a16_per_output_tiled_pair_k_kernel`
+instead, the build is on a regressed source revision and TTS audio will
+sound coherent-but-wrong (ASR maps it to a single repeated character).
+
 ## Download runtime artifacts
 
 On the Jetson:
