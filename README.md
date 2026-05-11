@@ -46,6 +46,7 @@ rm -f build*/examples/utils/libexampleUtils.a \
 - `native/edgellm_voice_worker/`: resident ASR/TTS worker binaries used by Jetson Voice.
 - `scripts/`: export, engine build, quantization, stateful Code2Wav, quality gate, and V2V scripts.
 - `docs/performance/`: frozen performance records across Orin Nano/NX.
+- `docs/reproduce-from-zero.md`: step-by-step reproduction checklist for a new machine.
 - `docs/plans/`: implementation notes and negative results that should not be rediscovered.
 - `docs/export-from-official-weights.md`: official Qwen3 weight -> ONNX export guide.
 - `AGENTS.md`: concise operating guide for coding agents working in this repo.
@@ -74,6 +75,14 @@ Expected artifact layout and required files are recorded in `deploy/artifacts/qw
 
 Runtime binaries and plugins are built from the EdgeLLM fork or delivered by the runtime image. The model artifact repo intentionally stores engines and model sidecars, not a random local plugin copied from `/tmp`.
 
+Current HF publication status:
+
+| Artifact set | Status | Notes |
+|---|---|---|
+| `orin-nano-highperf-2026-05-10` | complete | Product highperf Nano artifact set. |
+| `orin-nx-highperf-2026-05-11` | complete | Product highperf NX-native artifact set. |
+| `orin-nano-official-2026-05-10` | complete | Official/minimal Nano artifact set. |
+
 ## Jetson Voice Integration
 
 In `jetson-voice`, select Qwen3 with:
@@ -91,6 +100,9 @@ JETSON_VOICE_PROFILE=multilanguage-qwen-highperf-nx \
 QWEN3_HF_REPO_ID=harvestsu/qwen3-edgellm-jetson-artifacts \
 docker compose -f deploy/docker-compose.yml up -d
 ```
+
+See `docs/reproduce-from-zero.md` for the full clone -> artifact download ->
+EdgeLLM build -> Jetson Voice run checklist.
 
 For local service runs:
 

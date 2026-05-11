@@ -8,6 +8,7 @@
     "orin-nano-highperf-2026-05-10": {
       "device": "Jetson Orin Nano 8GB",
       "profile": "highperf",
+      "published_to_hf": true,
       "root": "/opt/models/qwen3-edgellm",
       "required_files": [
         "engines/orin-nano/highperf/asr_thinker_full_fp8embed/llm.engine",
@@ -39,12 +40,13 @@
       "notes": [
         "Full ASR/TTS vocab; no vocab pruning.",
         "ASR and TTS plugin binaries are intentionally not represented as model artifacts; they must match the runtime image/build.",
-        "Final upload should fill checksums and sizes after the HF artifact repo is created."
+        "Complete HF artifact set is published."
       ]
     },
     "orin-nx-highperf-2026-05-11": {
       "device": "Jetson Orin NX",
       "profile": "highperf",
+      "published_to_hf": true,
       "root": "/opt/models/qwen3-edgellm",
       "required_files": [
         "engines/orin-nx/highperf/asr_thinker_full_fp8embed/llm.engine",
@@ -77,6 +79,7 @@
     "orin-nano-official-2026-05-10": {
       "device": "Jetson Orin Nano 8GB",
       "profile": "official",
+      "published_to_hf": true,
       "root": "/opt/models/qwen3-edgellm",
       "required_files": [
         "engines/orin-nano/official/asr_thinker/llm.engine",

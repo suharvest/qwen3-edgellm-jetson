@@ -52,13 +52,28 @@ HF runtime artifacts are described by `deploy/artifacts/qwen3_manifest.json`.
 
 Current sets:
 
-- `orin-nano-highperf-2026-05-10`
-- `orin-nx-highperf-2026-05-11`
-- `orin-nano-official-2026-05-10`
+- `orin-nano-highperf-2026-05-10`: fully published to HF.
+- `orin-nx-highperf-2026-05-11`: fully published to HF.
+- `orin-nano-official-2026-05-10`: fully published to HF.
 
 Use `scripts/package_qwen3_artifacts.py` to stage artifacts and write checksums before upload.
 
 Do not upload temporary logs, ONNX intermediates, or ad-hoc audio samples to the runtime HF repo unless a new manifest set explicitly calls for them.
+
+Before claiming a profile is reproducible, compare `deploy/artifacts/qwen3_manifest.json`
+against the HF repo and make sure every required file exists.
+
+## From-zero Reproduction
+
+Use `docs/reproduce-from-zero.md` as the source of truth. Keep it aligned with:
+
+- `README.md`
+- `HF_ARTIFACTS.md`
+- `deploy/artifacts/qwen3_manifest.json`
+- Jetson Voice `configs/profiles/multilanguage-qwen-*.json`
+
+The highperf path must use the EdgeLLM fork branch
+`qwen3-tts-highperf-runtime-w8a16`; EdgeLLM `main` is not enough.
 
 ## Validation
 

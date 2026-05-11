@@ -14,6 +14,17 @@ This repository should contain large generated artifacts only:
 
 Do not store these large files in GitHub. Keep the required relative paths in `deploy/artifacts/qwen3_manifest.json` aligned with Jetson Voice profiles.
 
+## Publication status
+
+| Artifact set | HF status |
+|---|---|
+| `orin-nano-highperf-2026-05-10` | complete |
+| `orin-nx-highperf-2026-05-11` | complete |
+| `orin-nano-official-2026-05-10` | complete |
+
+Do not mark a profile as reproducible until every path in its
+`required_files` list exists in the HF repo.
+
 ## Stage and upload
 
 If the source directory already matches the manifest-relative layout:
