@@ -10,9 +10,57 @@
     },
     "orin-nano-official-2026-05-10": {
       "files": {
+        "engines/orin-nano/official/asr_audio_encoder/audio/audio_encoder.engine": {
+          "sha256": "612ea622a96aa4f2bc3ba28842b1585c8c45a444cb982220fd26fe53e0e5de0b",
+          "size_bytes": 377938780
+        },
+        "engines/orin-nano/official/asr_audio_encoder/audio/config.json": {
+          "sha256": "4bc4c1a2d6caa5b9a67edfa18d195afb902d8327a5432869a07e49150548e9e4",
+          "size_bytes": 4007
+        },
+        "engines/orin-nano/official/asr_thinker/config.json": {
+          "sha256": "45c3e97bdd27f68c50c83d1b5d257fc1b66cb679794d849c6a7b7bf0276c9579",
+          "size_bytes": 892
+        },
+        "engines/orin-nano/official/asr_thinker/llm.engine": {
+          "sha256": "85e92951bb773cd8c0bafdbbb8a313420ccf02c644a0a45c231ec6843304d1af",
+          "size_bytes": 1208142684
+        },
+        "engines/orin-nano/official/code2wav/code2wav.engine": {
+          "sha256": "a88e76a419b9d5ef15713e4ce2c0dd686ed4b8a6afbd5f413a24775ffa04435e",
+          "size_bytes": 459443284
+        },
+        "engines/orin-nano/official/code_predictor/config.json": {
+          "sha256": "4d1184f9a8eaab22bd68368cb1a3407d18c90ec824ef9b4012daa4402b0febc5",
+          "size_bytes": 859
+        },
+        "engines/orin-nano/official/code_predictor/llm.engine": {
+          "sha256": "b6245788733ee44851a2238e652bd42c8fd45fa5e64a43dc1c74a7b373cc38d0",
+          "size_bytes": 161249724
+        },
+        "engines/orin-nano/official/talker/config.json": {
+          "sha256": "eb7eed71dffe9a265816a0c023bb6998ed0d88900a57c809542ff5b3024507ac",
+          "size_bytes": 1406
+        },
+        "engines/orin-nano/official/talker/llm.engine": {
+          "sha256": "7a804227ab915524bafca6aef6a6a1357421948a5a2cd671abfcc3d8d5e510d2",
+          "size_bytes": 898537596
+        },
         "tts/speaker_encoder/speaker_encoder.onnx": {
           "sha256": "544da28fd7463a3fd722d54630fe39b730376b6aee850ca66845ee981e87a40f",
           "size_bytes": 35588164
+        },
+        "tts/tokenizer/processed_chat_template.json": {
+          "sha256": "5468a4f6656f0dd94145790865a68211c084e3bff689845a716d6320a19dcb0f",
+          "size_bytes": 670
+        },
+        "tts/tokenizer/tokenizer.json": {
+          "sha256": "a7d41145c408f3062e824f965be1c29854cd809e111cdf8170aa8b0bcd5d1fab",
+          "size_bytes": 11424262
+        },
+        "tts/tokenizer/tokenizer_config.json": {
+          "sha256": "45ee936f6ac8b9d84e82182c455b9f9db66da24a58a41e649254c059dbd7d12f",
+          "size_bytes": 1018
         }
       }
     },
