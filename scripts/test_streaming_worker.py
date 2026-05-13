@@ -523,6 +523,19 @@ def main() -> int:
                         help="Path to mel_filters.bin — required with --mel-settings.")
     parser.add_argument("--max-gen", type=int, default=200)
     parser.add_argument("--latency-runs", type=int, default=5)
+    parser.add_argument("--long-baseline-text", default=None,
+                        help="Ground-truth transcript for --long-wav. "
+                             "When provided, scenario D's LCS is computed "
+                             "against this string instead of the synthetic "
+                             "baseline_x2 concatenation, which lets the D "
+                             "gate be a real quality check rather than a "
+                             "mechanism-only test.")
+    parser.add_argument("--d-lcs-hard-gate", type=float, default=None,
+                        help="If set (e.g. 0.95), promote scenario D's LCS "
+                             "from a soft to a hard gate at this threshold. "
+                             "Requires --long-baseline-text for a meaningful "
+                             "comparison. Without this flag the original "
+                             "soft 0.90 gate is preserved.")
     parser.add_argument("--results-md", default=None)
     parser.add_argument("--results-json", default=None)
     args = parser.parse_args()
@@ -608,16 +621,26 @@ def main() -> int:
         d = scenario_d_autosegment(w, long_audio, mel_dir)
     finally:
         w.close()
-    # LCS comparisons: prefer real long-audio baseline if we have one. Always
-    # also report against baseline_x2 (concat) and baseline_x1 (single).
+    # LCS comparisons. Priority:
+    #   1. --long-baseline-text (curated ground truth, M5 hard-gate path)
+    #   2. real long-audio one-shot baseline (when audio <= 6.5 s)
+    #   3. baseline_x2 / baseline_x1 (synthetic fallback, mechanism-only)
     d["lcs_vs_long_baseline"] = (
         lcs_similarity(d["text"], long_baseline_text) if long_baseline_text else None)
     d["lcs_vs_baseline_x2"] = lcs_similarity(d["text"], baseline_text + baseline_text)
     d["lcs_vs_baseline_x1"] = lcs_similarity(d["text"], baseline_text)
     d["long_baseline_text"] = long_baseline_text
+    # Curated-ground-truth comparison (preferred when supplied).
+    if args.long_baseline_text:
+        d["lcs_vs_curated_gt"] = lcs_similarity(d["text"], args.long_baseline_text)
+        d["curated_ground_truth"] = args.long_baseline_text
+    else:
+        d["lcs_vs_curated_gt"] = None
+        d["curated_ground_truth"] = None
     results["scenarios"]["D_autosegment"] = d
     best_lcs = max(
-        x for x in (d["lcs_vs_long_baseline"], d["lcs_vs_baseline_x2"], d["lcs_vs_baseline_x1"])
+        x for x in (d["lcs_vs_curated_gt"], d["lcs_vs_long_baseline"],
+                    d["lcs_vs_baseline_x2"], d["lcs_vs_baseline_x1"])
         if x is not None
     )
     d["lcs_best"] = best_lcs
@@ -657,14 +680,19 @@ def main() -> int:
         "D_one_final": d["final"] is not None and d["final"].get("event") == "final",
         "D_at_least_one_segment_rotation": (d.get("segment_count") or 0) >= 1
                                             or d.get("rotations", 0) >= 1,
-        # D_lcs is a SOFT gate: reported but not hard-failed. The 0.90 spec
-        # threshold assumes a real long-form test utterance; with our
-        # available assets (5 s short WAV concat'd 2x, or 8.64 s spike WAV
-        # whose engine-refusable length blocks a clean one-shot baseline),
-        # no truly-fair ground truth exists. The mechanism gates above
-        # (D_one_final + D_at_least_one_segment_rotation) prove the
-        # auto-segmentation path executes correctly.
-        "D_lcs_ge_0.90_soft": d["lcs_best"] >= 0.90,
+        # D_lcs gate. When --long-baseline-text + --d-lcs-hard-gate are
+        # supplied, this becomes a hard gate against the curated ground
+        # truth (M5 commit-3 path). Otherwise it stays a soft 0.90 gate
+        # that compares against a synthetic baseline concatenation
+        # (mechanism-only check; the original M3 path).
+        **({
+            f"D_lcs_ge_{args.d_lcs_hard_gate}":
+                (d["lcs_vs_curated_gt"] is not None
+                 and d["lcs_vs_curated_gt"] >= args.d_lcs_hard_gate),
+        } if (args.d_lcs_hard_gate is not None and args.long_baseline_text)
+            else {
+            "D_lcs_ge_0.90_soft": d["lcs_best"] >= 0.90,
+        }),
         "E_malformed_json_handled": e["malformed_json"]["ok"],
         "E_unknown_event_handled": e["unknown_event"]["ok"],
         "E_chunk_too_long_handled": e["chunk_too_long"]["ok"],
@@ -726,6 +754,9 @@ def main() -> int:
     out.append(f"- rotations: {d['rotations']}")
     out.append(f"- segment_count: {d['segment_count']}")
     out.append(f"- text: `{d['text']}`")
+    if d.get("curated_ground_truth"):
+        out.append(f"- curated ground truth: `{d['curated_ground_truth']}`")
+        out.append(f"- LCS vs curated GT: {d['lcs_vs_curated_gt']:.3f}")
     if d.get("long_baseline_text"):
         out.append(f"- long-audio baseline: `{d['long_baseline_text']}`")
         out.append(f"- LCS vs long-baseline: {d['lcs_vs_long_baseline']:.3f}")
