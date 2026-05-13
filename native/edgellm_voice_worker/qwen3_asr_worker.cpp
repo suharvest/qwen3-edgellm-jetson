@@ -7,6 +7,7 @@
 #include "common/logger.h"
 #include "common/stringUtils.h"
 #include "common/trtUtils.h"
+#include "mel_extractor.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
 #include "requestFileParser.h"
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <getopt.h>
 #include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <cerrno>
 #include <cmath>
@@ -39,6 +41,8 @@ struct Args
 {
     std::string engineDir;
     std::string multimodalEngineDir;
+    std::string melSettingsPath;     //!< whisper_feature_extractor.json (optional, enables PCM input)
+    std::string melFiltersPath;      //!< mel_filters.bin (optional, enables PCM input)
     bool debug{false};
 };
 
@@ -146,6 +150,11 @@ void freeSession(AsrSessionState& session)
     session = AsrSessionState{};
 }
 
+//! Global MelExtractor handle (M4 step 5).  Loaded once at startup if the
+//! caller passed --melSettings / --melFilters (or set the matching env vars).
+//! Null means PCM input is disabled and `pcm_b64` chunks are refused.
+std::unique_ptr<MelExtractor> gMelExtractor;
+
 //! Convenience wrapper: build the structured kv_capacity_exceeded error event
 //! the design doc §12 milestone 2 calls for. M3 routes through this when the
 //! runtime returns false with status kKvCapacityExceeded.
@@ -188,20 +197,28 @@ enum OptionId : int
     HELP = 1000,
     ENGINE_DIR,
     MULTIMODAL_ENGINE_DIR,
+    MEL_SETTINGS,
+    MEL_FILTERS,
     DEBUG,
 };
 
 void printUsage(char const* programName)
 {
-    std::cerr << "Usage: " << programName << " --engineDir=<path> --multimodalEngineDir=<path> [--debug]\n\n"
-              << "Reads llm_inference-compatible JSON lines from stdin and writes JSON lines to stdout.\n";
+    std::cerr << "Usage: " << programName << " --engineDir=<path> --multimodalEngineDir=<path>"
+              << " [--melSettings=<json>] [--melFilters=<bin>] [--debug]\n\n"
+              << "Reads llm_inference-compatible JSON lines from stdin and writes JSON lines to stdout.\n"
+              << "Pass --melSettings + --melFilters (or set EDGE_LLM_ASR_MEL_SETTINGS/EDGE_LLM_ASR_MEL_FILTERS)\n"
+              << "to enable PCM-input streaming via `pcm_b64` chunk events.\n";
 }
 
 bool parseArgs(Args& args, int argc, char** argv)
 {
     static struct option options[] = {{"help", no_argument, 0, HELP},
         {"engineDir", required_argument, 0, ENGINE_DIR},
-        {"multimodalEngineDir", required_argument, 0, MULTIMODAL_ENGINE_DIR}, {"debug", no_argument, 0, DEBUG},
+        {"multimodalEngineDir", required_argument, 0, MULTIMODAL_ENGINE_DIR},
+        {"melSettings", required_argument, 0, MEL_SETTINGS},
+        {"melFilters", required_argument, 0, MEL_FILTERS},
+        {"debug", no_argument, 0, DEBUG},
         {0, 0, 0, 0}};
 
     int opt;
@@ -212,12 +229,122 @@ bool parseArgs(Args& args, int argc, char** argv)
         case HELP: printUsage(argv[0]); std::exit(EXIT_SUCCESS);
         case ENGINE_DIR: args.engineDir = optarg; break;
         case MULTIMODAL_ENGINE_DIR: args.multimodalEngineDir = optarg; break;
+        case MEL_SETTINGS: args.melSettingsPath = optarg; break;
+        case MEL_FILTERS: args.melFiltersPath = optarg; break;
         case DEBUG: args.debug = true; break;
         default: return false;
         }
     }
+    // Env-var fallbacks let the worker auto-locate the assets shipped under
+    // deploy/audio_preprocessing/ without forcing every caller to wire flags.
+    if (args.melSettingsPath.empty())
+    {
+        if (char const* p = std::getenv("EDGE_LLM_ASR_MEL_SETTINGS")) args.melSettingsPath = p;
+    }
+    if (args.melFiltersPath.empty())
+    {
+        if (char const* p = std::getenv("EDGE_LLM_ASR_MEL_FILTERS")) args.melFiltersPath = p;
+    }
 
     return !args.engineDir.empty() && !args.multimodalEngineDir.empty();
+}
+
+// ---------------------------------------------------------------------------
+// PCM input support (M4 step 5).  Adds a `pcm_b64` field to the chunk event:
+// raw float32 16 kHz mono PCM, base64-encoded, MelExtractor produces the mel,
+// we write it as a temp safetensors file and let the existing runHop path
+// consume it. Backward compat: `mel_path` chunks still work verbatim.
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> base64Decode(std::string const& in)
+{
+    static int8_t kT[256];
+    static bool kInit = []() {
+        for (auto& v : kT) v = -1;
+        char const* a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; i < 64; ++i) kT[static_cast<unsigned char>(a[i])] = static_cast<int8_t>(i);
+        return true;
+    }();
+    (void)kInit;
+    std::vector<uint8_t> out;
+    out.reserve(in.size() * 3 / 4 + 4);
+    int32_t v = 0;
+    int32_t bits = 0;
+    for (char c : in)
+    {
+        if (c == '=' || c == '\n' || c == '\r' || c == ' ') continue;
+        int8_t const x = kT[static_cast<unsigned char>(c)];
+        if (x < 0) continue;
+        v = (v << 6) | x;
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((v >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+//! Write a single fp16 tensor as a safetensors file with key "mel".
+//! Layout matches scripts/test_streaming_worker.py::write_safetensors and the
+//! mel-tensor consumer in TensorRT-Edge-LLM examples/utils/requestFileParser.
+void writeMelSafetensors(std::vector<float> const& mel_f32,
+                         int32_t n_mels, int32_t n_frames,
+                         std::filesystem::path const& out_path)
+{
+    // Convert to fp16 to match the on-disk format the worker's mel reader uses
+    // (other writers in this repo emit fp16). Use a minimal round-to-nearest
+    // fp32→fp16 conversion sufficient for log-mel range (-1.0..1.0 after
+    // post_normalize) — full IEEE 754 fp16 with subnormals + NaN/Inf.
+    auto f32_to_f16 = [](float f) -> uint16_t {
+        uint32_t x;
+        std::memcpy(&x, &f, sizeof(x));
+        uint32_t const sign = (x >> 16) & 0x8000u;
+        int32_t const exp = static_cast<int32_t>((x >> 23) & 0xFF) - 127 + 15;
+        uint32_t const mant = x & 0x7FFFFFu;
+        if (exp <= 0)
+        {
+            // Subnormal or underflow.
+            if (exp < -10) return static_cast<uint16_t>(sign);
+            uint32_t const m = (mant | 0x800000u) >> (1 - exp);
+            uint32_t const rounded = (m + 0x1000u) >> 13;
+            return static_cast<uint16_t>(sign | rounded);
+        }
+        if (exp >= 31)
+        {
+            // Overflow / Inf / NaN.
+            if (((x >> 23) & 0xFF) == 0xFF && mant != 0) return static_cast<uint16_t>(sign | 0x7E00u);
+            return static_cast<uint16_t>(sign | 0x7C00u);
+        }
+        uint32_t const m = mant >> 13;
+        uint32_t const r = mant & 0x1FFFu;
+        uint16_t out = static_cast<uint16_t>(sign | (exp << 10) | m);
+        if (r > 0x1000u || (r == 0x1000u && (m & 1))) ++out;
+        return out;
+    };
+
+    int32_t const batch = 1;
+    size_t const elem_count = static_cast<size_t>(batch) * n_mels * n_frames;
+    if (elem_count != mel_f32.size())
+    {
+        throw std::runtime_error("writeMelSafetensors: tensor size mismatch");
+    }
+    std::vector<uint16_t> half(elem_count);
+    for (size_t i = 0; i < elem_count; ++i) half[i] = f32_to_f16(mel_f32[i]);
+
+    size_t const nbytes = half.size() * sizeof(uint16_t);
+    Json header = Json{{"mel", Json{{"dtype", "F16"},
+                                    {"shape", Json::array({batch, n_mels, n_frames})},
+                                    {"data_offsets", Json::array({0, nbytes})}}}};
+    std::string header_str = header.dump();
+    while ((header_str.size() % 8) != 0) header_str.push_back(' ');
+
+    std::ofstream f(out_path, std::ios::binary);
+    if (!f) throw std::runtime_error("writeMelSafetensors: cannot open " + out_path.string());
+    uint64_t const header_len = static_cast<uint64_t>(header_str.size());
+    f.write(reinterpret_cast<char const*>(&header_len), sizeof(header_len));
+    f.write(header_str.data(), static_cast<std::streamsize>(header_str.size()));
+    f.write(reinterpret_cast<char const*>(half.data()), static_cast<std::streamsize>(nbytes));
 }
 
 std::filesystem::path writeTempInput(Json const& input, std::string const& id)
@@ -449,19 +576,99 @@ void handleChunk(Json const& input, AsrSessionState& session,
         std::cout << ev.dump() << std::endl;
         return;
     }
-    if (!input.contains("mel_path") || !input["mel_path"].is_string())
+    bool const hasMelPath = input.contains("mel_path") && input["mel_path"].is_string();
+    bool const hasPcm = input.contains("pcm_b64") && input["pcm_b64"].is_string();
+    if (!hasMelPath && !hasPcm)
     {
         Json ev = {{"event", "error"}, {"ok", false}, {"error", "chunk_missing_mel_path"}, {"id", id}};
         std::cout << ev.dump() << std::endl;
         freeSession(session);
         return;
     }
+    if (hasPcm && !gMelExtractor)
+    {
+        Json ev = {{"event", "error"}, {"ok", false},
+            {"error", "pcm_input_unsupported"}, {"id", id},
+            {"hint", "worker started without --melSettings/--melFilters; pass them or set EDGE_LLM_ASR_MEL_{SETTINGS,FILTERS}"}};
+        std::cout << ev.dump() << std::endl;
+        freeSession(session);
+        return;
+    }
 
-    std::string const melPath = input["mel_path"].get<std::string>();
+    // Tracks any tempfile we have to clean up at end-of-hop.
+    std::filesystem::path melTempPath;
+    std::string melPath;
+    if (hasPcm)
+    {
+        try
+        {
+            std::string const b64 = input["pcm_b64"].get<std::string>();
+            std::vector<uint8_t> raw = base64Decode(b64);
+            if (raw.size() % sizeof(float) != 0)
+            {
+                Json ev = {{"event", "error"}, {"ok", false},
+                    {"error", "pcm_b64_malformed"}, {"id", id},
+                    {"hint", "raw float32 LE expected; decoded bytes not divisible by 4"}};
+                std::cout << ev.dump() << std::endl;
+                freeSession(session);
+                return;
+            }
+            std::vector<float> pcm(raw.size() / sizeof(float));
+            std::memcpy(pcm.data(), raw.data(), raw.size());
+            int32_t n_frames = 0;
+            std::vector<float> mel = gMelExtractor->compute(pcm, &n_frames);
+            if (n_frames <= 0)
+            {
+                Json ev = {{"event", "error"}, {"ok", false},
+                    {"error", "pcm_too_short"}, {"id", id}, {"n_samples", static_cast<int64_t>(pcm.size())}};
+                std::cout << ev.dump() << std::endl;
+                freeSession(session);
+                return;
+            }
+            // Write temp safetensors that the existing runHop path consumes.
+            melTempPath = std::filesystem::temp_directory_path()
+                / ("qwen3_asr_pcm_mel_" + (id.empty() ? std::string("s") : id) + "_"
+                   + std::to_string(session.chunkId) + "_"
+                   + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())
+                   + ".safetensors");
+            writeMelSafetensors(mel, gMelExtractor->n_mels(), n_frames, melTempPath);
+            melPath = melTempPath.string();
+        }
+        catch (std::exception const& e)
+        {
+            Json ev = {{"event", "error"}, {"ok", false},
+                {"error", "pcm_to_mel_failed"}, {"id", id}, {"detail", e.what()}};
+            std::cout << ev.dump() << std::endl;
+            freeSession(session);
+            return;
+        }
+    }
+    else
+    {
+        melPath = input["mel_path"].get<std::string>();
+    }
+
+    // RAII cleanup for any PCM-derived temp safetensors. Captures by reference
+    // so we don't try to remove an empty path when mel_path was provided.
+    struct TempCleanup
+    {
+        std::filesystem::path& p;
+        ~TempCleanup()
+        {
+            if (!p.empty())
+            {
+                std::error_code ec;
+                std::filesystem::remove(p, ec);
+            }
+        }
+    } cleanup{melTempPath};
+
     bool const isLast = input.value("last", false);
     // audio_sec is OPTIONAL for backward compat with step 2 spike (which omits
     // it and treats the worker as a stateless cumulative-mel decoder). When
     // present, drives the max_input_len cap + auto-segmentation policy.
+    // For PCM input, we infer audio_sec from the decoded sample count if the
+    // caller didn't provide it explicitly — the cap policy applies equally.
     bool const hasAudioSec = input.contains("audio_sec") && input["audio_sec"].is_number();
     double const audioSec = hasAudioSec ? input["audio_sec"].get<double>() : 0.0;
     session.lastActivity = std::chrono::steady_clock::now();
@@ -663,6 +870,24 @@ int main(int argc, char** argv)
 
     gLogger.setLevel(args.debug ? nvinfer1::ILogger::Severity::kVERBOSE : nvinfer1::ILogger::Severity::kWARNING);
     auto pluginHandles = loadEdgellmPluginLib();
+
+    // M4 step 5: load mel-preprocessing assets if provided. PCM input via
+    // `pcm_b64` chunk events requires both files; mel_path-only callers
+    // remain fully supported when these are absent.
+    if (!args.melSettingsPath.empty() && !args.melFiltersPath.empty())
+    {
+        try
+        {
+            gMelExtractor = std::make_unique<MelExtractor>(args.melSettingsPath, args.melFiltersPath);
+            LOG_INFO("MelExtractor loaded (n_fft=%d n_mels=%d hop=%d)",
+                     gMelExtractor->n_fft(), gMelExtractor->n_mels(), gMelExtractor->hop_length());
+        }
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("MelExtractor init failed: %s — PCM input disabled", e.what());
+            gMelExtractor.reset();
+        }
+    }
 
     // SPIKE — enable stage timing so the chunk handler can report per-stage ms.
     setProfilingEnabled(true);

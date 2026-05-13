@@ -28,6 +28,7 @@ same mel preprocessing as scripts/test_m3_step2_spike.py.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -199,6 +200,10 @@ class Worker:
         env.setdefault("EDGE_LLM_ASR_CUDA_GRAPH", "0")
         cmd = [args.worker, "--engineDir", args.engine_dir,
                "--multimodalEngineDir", args.multimodal_engine_dir]
+        if getattr(args, "mel_settings", None):
+            cmd += ["--melSettings", args.mel_settings]
+        if getattr(args, "mel_filters", None):
+            cmd += ["--melFilters", args.mel_filters]
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, env=env,
@@ -302,6 +307,55 @@ def scenario_b_streaming(worker: Worker, audio: np.ndarray, mel_dir: Path,
         worker.send(ev)
         resp = worker.recv(f"scen_b_h{k}")
         # In scenario B audio is short enough that no rotation should occur.
+        if resp.get("event") == "segment_rotation":
+            rotations += 1
+            continue
+        if is_last:
+            end_latency_ms = (time.perf_counter() - t0) * 1000.0
+            finals.append(resp)
+    assert end_latency_ms is not None
+    return {
+        "duration_s": duration,
+        "n_hops": n_hops,
+        "rotations": rotations,
+        "final": finals[-1] if finals else None,
+        "end_latency_ms": end_latency_ms,
+        "text": strip_language_prefix(finals[-1].get("text", "")) if finals else "",
+    }
+
+
+def scenario_f_pcm_streaming(worker: Worker, audio: np.ndarray,
+                             hop_sec: float = HOP_SEC) -> dict:
+    """PCM-input streaming variant of scenario B (M4 step 5).
+
+    Same hop cadence and cumulative-mel semantics, but the chunk events carry
+    raw float32 PCM (base64-encoded) instead of pre-computed mel safetensors.
+    The worker runs its C++ MelExtractor on each chunk.
+
+    Gate: final-text LCS vs scenario B baseline >= 0.95.
+    """
+    duration = len(audio) / SAMPLE_RATE
+    hop_samples = int(SAMPLE_RATE * hop_sec)
+    n_hops = int(np.ceil(len(audio) / hop_samples))
+    sid = f"scen_f_{uuid.uuid4().hex[:6]}"
+    worker.send({"event": "begin", "id": sid, "sample_rate": SAMPLE_RATE,
+                 "chunk_size_sec": hop_sec, "audio_format": "pcm"})
+    ack = worker.recv("scen_f_begin")
+    assert ack.get("event") == "begin_ack", ack
+
+    finals = []
+    rotations = 0
+    end_latency_ms: Optional[float] = None
+    for k in range(n_hops):
+        end = min((k + 1) * hop_samples, len(audio))
+        slice_audio = audio[:end].astype(np.float32)
+        pcm_b64 = base64.b64encode(slice_audio.tobytes()).decode("ascii")
+        is_last = (k == n_hops - 1)
+        ev = {"event": "chunk", "id": sid, "pcm_b64": pcm_b64,
+              "audio_sec": end / SAMPLE_RATE, "last": is_last}
+        t0 = time.perf_counter()
+        worker.send(ev)
+        resp = worker.recv(f"scen_f_h{k}")
         if resp.get("event") == "segment_rotation":
             rotations += 1
             continue
@@ -463,6 +517,10 @@ def main() -> int:
     parser.add_argument("--multimodal-engine-dir",
         default="/opt/models/qwen3-edgellm/engines/orin-nx/highperf/asr_audio_encoder")
     parser.add_argument("--mel-dir", default="/tmp/m3_streaming_mels")
+    parser.add_argument("--mel-settings", default=None,
+                        help="Path to whisper_feature_extractor.json — enables scenario F (PCM input).")
+    parser.add_argument("--mel-filters", default=None,
+                        help="Path to mel_filters.bin — required with --mel-settings.")
     parser.add_argument("--max-gen", type=int, default=200)
     parser.add_argument("--latency-runs", type=int, default=5)
     parser.add_argument("--results-md", default=None)
@@ -571,6 +629,25 @@ def main() -> int:
     e = scenario_e_errors(args)
     results["scenarios"]["E_errors"] = e
 
+    # Scenario F — PCM-input streaming (M4 step 5). Skipped if the worker
+    # wasn't configured with --mel-settings / --mel-filters (i.e. PCM mode
+    # disabled). When enabled, gate against the precomputed-mel baseline (B).
+    f_result: Optional[dict] = None
+    if args.mel_settings and args.mel_filters:
+        print("[scen_f] PCM-input streaming ...", file=sys.stderr, flush=True)
+        w = Worker(args)
+        try:
+            f_result = scenario_f_pcm_streaming(w, short_audio)
+        finally:
+            w.close()
+        f_result["lcs_vs_baseline_B"] = lcs_similarity(f_result["text"], b["text"])
+        f_result["lcs_vs_baseline_A"] = lcs_similarity(f_result["text"], baseline_text)
+        results["scenarios"]["F_pcm_streaming"] = f_result
+        print(f"[scen_f] text={f_result['text']!r} "
+              f"lcs_vs_B={f_result['lcs_vs_baseline_B']:.3f} "
+              f"lcs_vs_A={f_result['lcs_vs_baseline_A']:.3f}",
+              file=sys.stderr, flush=True)
+
     # Gate evaluation.
     gates = {
         "A_oneshot_ok": a["ok"],
@@ -593,6 +670,8 @@ def main() -> int:
         "E_chunk_too_long_handled": e["chunk_too_long"]["ok"],
         "E_session_cleared_after_error": e["session_cleared_after_error"]["ok"],
     }
+    if f_result is not None:
+        gates["F_pcm_lcs_ge_0.95"] = f_result["lcs_vs_baseline_B"] >= 0.95
     results["gates"] = gates
     # Hard-failing gates exclude SOFT ones (suffix `_soft`).
     hard_gates = {k: v for k, v in gates.items() if not k.endswith("_soft")}
