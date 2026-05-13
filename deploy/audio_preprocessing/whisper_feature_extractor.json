@@ -1,0 +1,31 @@
+{
+  "source_model": "Qwen/Qwen3-ASR-0.6B",
+  "feature_extractor_type": "WhisperFeatureExtractor",
+  "sampling_rate": 16000,
+  "n_fft": 400,
+  "hop_length": 160,
+  "n_mels": 128,
+  "chunk_length_sec": 30,
+  "n_samples_max": 480000,
+  "padding_value": 0.0,
+  "dither": 0.0,
+  "window": "hann_periodic",
+  "stft_center": true,
+  "stft_pad_mode": "reflect",
+  "power": 2.0,
+  "mel_floor": 1e-10,
+  "log_base": "log10",
+  "drop_last_frame": true,
+  "clamp_to_max_minus_8": true,
+  "post_normalize": "(x + 4) / 4",
+  "mel_filters": {
+    "path": "mel_filters.bin",
+    "dtype": "float32",
+    "shape": [
+      201,
+      128
+    ],
+    "layout": "row-major; transpose then matmul against power spec",
+    "sha256": "7b5d7251fbad8a593a6564d92c6069e282812404adfcf8505161108c4aa159d8"
+  }
+}
