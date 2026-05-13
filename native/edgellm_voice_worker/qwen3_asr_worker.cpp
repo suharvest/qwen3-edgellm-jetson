@@ -7,6 +7,8 @@
 #include "common/logger.h"
 #include "common/stringUtils.h"
 #include "common/trtUtils.h"
+#include "profiling/metrics.h"
+#include "profiling/timer.h"
 #include "requestFileParser.h"
 #include "runtime/llmInferenceSpecDecodeRuntime.h"
 #include "runtime/llmRuntimeUtils.h"
@@ -43,7 +45,7 @@ struct Args
 //   {"event":"begin","id":<sid>,"sample_rate":16000,
 //    "chunk_size_sec":0.5,"unfixed_chunk_num":2,"unfixed_token_num":5,
 //    "force_language":null,"context":""}
-//   {"event":"chunk","id":<sid>,"mel":<base64 fp16 mel>,"last":false}
+//   {"event":"chunk","id":<sid>,"mel_path":<path to fp16 mel safetensors>,"last":false}
 //   {"event":"end","id":<sid>}
 //
 // Lines with no `event` field hit the legacy one-shot handler — required
@@ -183,10 +185,135 @@ std::filesystem::path writeTempInput(Json const& input, std::string const& id)
 }
 
 // ---------------------------------------------------------------------------
-// Step 1 handlers: stub event handlers. The streaming chunk-and-confirm
-// loop lands in step 2 (no-prefix spike) and step 3 (prefix-prompt). For
-// now begin/chunk/end just ACK so the dispatcher contract is testable.
+// SPIKE — replaced in step 3.
+// Step 2 chunk handler: per-chunk full one-shot decode via existing
+// handleRequest path. No prefix prompt. The test driver writes per-hop
+// mel safetensors files containing the FULL audio accumulated so far
+// (hop k = first 500*(k+1) ms). Worker just builds the legacy one-shot
+// request JSON pointing at that mel and times the call.
+// Step 3 will replace this with prefix-prompt rollback (§15.6 step 3).
 // ---------------------------------------------------------------------------
+
+//! Per-stage timing snapshot pulled from gTimer. Tracks the last-recorded
+//! GPU time for each stage of interest. We capture cumulative entry counts
+//! between hops so we can diff and isolate this-hop's contribution even
+//! when stages report multiple runs per call (e.g. eagle iterations).
+struct StageTimingSnapshot
+{
+    float encoderMs{0.0f};         //!< Sum of new entries for audio_encoder this hop.
+    float prefillMs{0.0f};         //!< Sum of new entries for llm_prefill this hop.
+    float decodeMs{0.0f};          //!< Sum of new entries for llm_generation this hop.
+};
+
+//! Cumulative counters across hops, used to diff per-stage timing slices.
+struct StageTimingCounters
+{
+    size_t encoderEntries{0};
+    size_t prefillEntries{0};
+    size_t decodeEntries{0};
+};
+
+float sumNewEntries(std::string const& stageId, size_t& priorCount)
+{
+    auto data = gTimer.getTimingData(stageId);
+    if (!data.has_value())
+    {
+        return 0.0f;
+    }
+    auto const& times = data->gpuTimesMs;
+    float sumMs = 0.0f;
+    for (size_t i = priorCount; i < times.size(); ++i)
+    {
+        sumMs += times[i];
+    }
+    priorCount = times.size();
+    return sumMs;
+}
+
+StageTimingSnapshot captureStageDelta(StageTimingCounters& counters)
+{
+    StageTimingSnapshot snap;
+    snap.encoderMs = sumNewEntries(metrics::StageNames::kAUDIO_ENCODER, counters.encoderEntries);
+    snap.prefillMs = sumNewEntries(metrics::StageNames::kLLM_PREFILL, counters.prefillEntries);
+    snap.decodeMs = sumNewEntries(metrics::StageNames::kLLM_GENERATION, counters.decodeEntries);
+    return snap;
+}
+
+//! Build the legacy one-shot request JSON for a single mel file.
+//! Mirrors the request layout in scripts/validate_qwen3_tts_quality_gate.py.
+Json buildOneShotRequestForMel(std::string const& melPath, int32_t maxGenerateLength)
+{
+    Json msg = {
+        {"role", "user"},
+        {"content", Json::array({Json{{"type", "audio"}, {"audio", melPath}}})},
+    };
+    Json req = {
+        {"messages", Json::array({msg})},
+    };
+    Json input = {
+        {"requests", Json::array({req})},
+        {"batch_size", 1},
+        {"temperature", 1.0},
+        {"top_p", 1.0},
+        {"top_k", 1},
+        {"max_generate_length", maxGenerateLength},
+        {"apply_chat_template", true},
+        {"add_generation_prompt", true},
+    };
+    return input;
+}
+
+//! Core: drive one handleRequest pass on a mel file, return (text, timings).
+//! Used by handleChunk/handleEnd in spike. Returns std::nullopt on failure.
+struct HopResult
+{
+    bool ok{false};
+    std::string text;
+    double totalMs{0.0};
+    StageTimingSnapshot stages{};
+};
+
+HopResult runHop(std::string const& melPath, int32_t maxGenerateLength,
+    rt::LLMInferenceSpecDecodeRuntime& runtime, cudaStream_t stream,
+    std::unordered_map<std::string, std::string>& loraWeightsMap,
+    StageTimingCounters& stageCounters)
+{
+    HopResult result;
+    auto const t0 = std::chrono::steady_clock::now();
+    std::filesystem::path tempPath;
+    try
+    {
+        Json input = buildOneShotRequestForMel(melPath, maxGenerateLength);
+        tempPath = writeTempInput(input, "spike_hop");
+        std::vector<rt::LLMGenerationRequest> batched;
+        std::tie(loraWeightsMap, batched) = exampleUtils::parseRequestFile(tempPath, -1, -1);
+        if (batched.empty())
+        {
+            throw std::runtime_error("parseRequestFile produced no requests");
+        }
+        rt::LLMGenerationResponse llmResponse;
+        bool const ok = runtime.handleRequest(batched[0], llmResponse, stream);
+        result.ok = ok;
+        if (ok && !llmResponse.outputTexts.empty())
+        {
+            result.text = llmResponse.outputTexts[0];
+        }
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("runHop exception: %s", e.what());
+        result.ok = false;
+        result.text = std::string("runHop_exception: ") + e.what();
+    }
+    if (!tempPath.empty())
+    {
+        std::error_code ec;
+        std::filesystem::remove(tempPath, ec);
+    }
+    result.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    result.stages = captureStageDelta(stageCounters);
+    return result;
+}
 
 void handleBegin(Json const& input, AsrSessionState& session)
 {
@@ -218,7 +345,11 @@ void handleBegin(Json const& input, AsrSessionState& session)
     std::cout << ev.dump() << std::endl;
 }
 
-void handleChunk(Json const& input, AsrSessionState& session)
+// SPIKE — replaced in step 3.
+void handleChunk(Json const& input, AsrSessionState& session,
+    rt::LLMInferenceSpecDecodeRuntime& runtime, cudaStream_t stream,
+    std::unordered_map<std::string, std::string>& loraWeightsMap,
+    StageTimingCounters& stageCounters, int32_t maxGenerateLength)
 {
     std::string const id = input.value("id", "");
     if (!session.active)
@@ -231,14 +362,53 @@ void handleChunk(Json const& input, AsrSessionState& session)
         std::cout << ev.dump() << std::endl;
         return;
     }
+    if (!input.contains("mel_path") || !input["mel_path"].is_string())
+    {
+        Json ev = {{"event", "error"}, {"ok", false}, {"error", "chunk_missing_mel_path"}, {"id", id}};
+        std::cout << ev.dump() << std::endl;
+        return;
+    }
+
+    std::string const melPath = input["mel_path"].get<std::string>();
+    bool const isLast = input.value("last", false);
     session.lastActivity = std::chrono::steady_clock::now();
-    Json ev = {{"event", "chunk_ack"}, {"id", id}};
+
+    int32_t const hopId = session.chunkId;
+    HopResult const hop = runHop(melPath, maxGenerateLength, runtime, stream, loraWeightsMap, stageCounters);
+    session.chunkId += 1;
+    session.rawDecoded = hop.text;
+
+    Json ev = {
+        {"event", isLast ? "final" : "partial"},
+        {"id", id},
+        {"hop_id", hopId},
+        {"ok", hop.ok},
+        {"text", hop.text},
+        {"elapsed_ms", hop.totalMs},
+        {"encoder_ms", hop.stages.encoderMs},
+        {"prefill_ms", hop.stages.prefillMs},
+        {"decode_ms", hop.stages.decodeMs},
+    };
+    if (isLast)
+    {
+        ev["total_ms"] = hop.totalMs;
+        std::cout << ev.dump() << std::endl;
+        // Free session.
+        session = AsrSessionState{};
+        return;
+    }
     std::cout << ev.dump() << std::endl;
 }
 
-void handleEnd(Json const& /*input*/, AsrSessionState& session)
+// SPIKE — replaced in step 3.
+void handleEnd(Json const& /*input*/, AsrSessionState& session,
+    rt::LLMInferenceSpecDecodeRuntime& /*runtime*/, cudaStream_t /*stream*/,
+    std::unordered_map<std::string, std::string>& /*loraWeightsMap*/,
+    StageTimingCounters& /*stageCounters*/, int32_t /*maxGenerateLength*/)
 {
     std::string const id = session.sessionId;
+    // Spike contract: the driver flags the final hop via last=true on a chunk
+    // event. Bare `end` events just close the session.
     session = AsrSessionState{};
     Json ev = {{"event", "end_ack"}, {"id", id}};
     std::cout << ev.dump() << std::endl;
@@ -338,6 +508,9 @@ int main(int argc, char** argv)
     gLogger.setLevel(args.debug ? nvinfer1::ILogger::Severity::kVERBOSE : nvinfer1::ILogger::Severity::kWARNING);
     auto pluginHandles = loadEdgellmPluginLib();
 
+    // SPIKE — enable stage timing so the chunk handler can report per-stage ms.
+    setProfilingEnabled(true);
+
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreate(&stream));
 
@@ -356,6 +529,10 @@ int main(int argc, char** argv)
 
     // Single-session worker per §15.6. Multi-session is out of scope for P0.
     AsrSessionState session;
+    // SPIKE — cumulative stage entry counters; runHop diffs against these.
+    StageTimingCounters stageCounters{};
+    // SPIKE — per-hop decode budget. Generous default; driver controls hop cadence.
+    int32_t const spikeMaxGenerateLength = 200;
 
     std::string line;
     while (std::getline(std::cin, line))
@@ -392,11 +569,11 @@ int main(int argc, char** argv)
         }
         else if (event == "chunk")
         {
-            handleChunk(parsed, session);
+            handleChunk(parsed, session, *runtime, stream, loraWeightsMap, stageCounters, spikeMaxGenerateLength);
         }
         else if (event == "end")
         {
-            handleEnd(parsed, session);
+            handleEnd(parsed, session, *runtime, stream, loraWeightsMap, stageCounters, spikeMaxGenerateLength);
         }
         else
         {
