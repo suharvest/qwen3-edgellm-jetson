@@ -730,6 +730,53 @@ std::string stripLanguagePrefix(std::string const& text)
     return text;
 }
 
+//! P1 — Auto-segment boundary dedup (design doc §15.5.2).
+//!
+//! At segment rotation, the driver carries over `kCarryoverSec` of audio
+//! into the next segment to preserve context continuity. The first hop of
+//! the new segment therefore re-transcribes that overlap region, causing
+//! the head of newSegment to duplicate the tail of fullText (the LCS≤0.85
+//! failure on long Chinese utterances).
+//!
+//! Strategy: find the longest k such that fullText's last k chars equal
+//! newSegment's first k chars (UTF-8 byte-wise; safe because we only
+//! return a clean cut when the boundary aligns on multi-byte sequence
+//! boundaries — see the continuation-byte guard below). Return the
+//! newSegment with that overlap trimmed.
+//!
+//! Tuned for Chinese (3 bytes/char). The overlap window is bounded by
+//! 2 × kCarryoverSec × audio_tokens_per_sec × ~2 bytes/char ≈ 80 bytes
+//! upper bound for typical fast-speech zh-CN. We scan up to min(64, half
+//! the shorter string) for cost control.
+std::string dedupAtBoundary(std::string const& fullText, std::string const& newSegment)
+{
+    if (fullText.empty() || newSegment.empty())
+    {
+        return newSegment;
+    }
+    auto const isUtf8Cont = [](unsigned char c) { return (c & 0xC0) == 0x80; };
+    int const scanLimit = static_cast<int>(std::min<size_t>({fullText.size(), newSegment.size(), size_t{96}}));
+    for (int k = scanLimit; k > 0; --k)
+    {
+        // Skip k that would split a UTF-8 sequence on either side.
+        if (isUtf8Cont(static_cast<unsigned char>(newSegment[k - 1])))
+        {
+            // mid-sequence end on the newSegment side, only valid if next byte (newSegment[k]) is also continuation
+            // simpler: just require the byte AT newSegment[k] (if exists) to not be a continuation byte → boundary
+        }
+        if (static_cast<size_t>(k) < newSegment.size()
+            && isUtf8Cont(static_cast<unsigned char>(newSegment[k])))
+        {
+            continue;  //!< k cuts mid-UTF8 in newSegment; skip.
+        }
+        if (fullText.compare(fullText.size() - k, k, newSegment, 0, k) == 0)
+        {
+            return newSegment.substr(k);
+        }
+    }
+    return newSegment;
+}
+
 void handleChunk(Json const& input, AsrSessionState& session,
     rt::LLMInferenceSpecDecodeRuntime& runtime, cudaStream_t stream,
     std::unordered_map<std::string, std::string>& loraWeightsMap,
@@ -887,9 +934,11 @@ void handleChunk(Json const& input, AsrSessionState& session,
     if (shouldRotate)
     {
         // Append this segment's text and rotate. Strip language prefix so
-        // segment texts concatenate cleanly.
+        // segment texts concatenate cleanly. P1: LCS-based boundary dedup
+        // strips overlap re-transcribed from the carryover window.
         std::string segText = stripLanguagePrefix(hop.text);
-        session.fullText += segText;
+        std::string const dedupedSegText = dedupAtBoundary(session.fullText, segText);
+        session.fullText += dedupedSegText;
         session.segmentCount += 1;
         session.chunkId = 0;
         session.rawDecoded.clear();
@@ -925,9 +974,12 @@ void handleChunk(Json const& input, AsrSessionState& session,
     };
     if (isLast)
     {
-        // Build final text = concatenated segments + this final hop.
+        // Build final text = concatenated segments + this final hop, with
+        // P1 boundary dedup applied to the final segment as well (catches
+        // the rotate-then-immediate-finish case).
         std::string segText = stripLanguagePrefix(hop.text);
-        std::string finalText = session.fullText + segText;
+        std::string const dedupedSegText = dedupAtBoundary(session.fullText, segText);
+        std::string finalText = session.fullText + dedupedSegText;
         ev["text"] = finalText;
         ev["segment_count"] = session.segmentCount + 1;
         ev["total_ms"] = hop.totalMs;

@@ -530,12 +530,13 @@ def main() -> int:
                              "baseline_x2 concatenation, which lets the D "
                              "gate be a real quality check rather than a "
                              "mechanism-only test.")
-    parser.add_argument("--d-lcs-hard-gate", type=float, default=None,
-                        help="If set (e.g. 0.95), promote scenario D's LCS "
-                             "from a soft to a hard gate at this threshold. "
-                             "Requires --long-baseline-text for a meaningful "
-                             "comparison. Without this flag the original "
-                             "soft 0.90 gate is preserved.")
+    parser.add_argument("--d-lcs-hard-gate", type=float, default=0.95,
+                        help="Scenario D hard-gate LCS threshold. Defaults "
+                             "to 0.95 (P1 dedup fix promotes D from soft to "
+                             "hard). Requires --long-baseline-text for a "
+                             "meaningful comparison. Pass an explicit None "
+                             "via env-driven override only when re-running "
+                             "the legacy mechanism-only soft path.")
     parser.add_argument("--results-md", default=None)
     parser.add_argument("--results-json", default=None)
     args = parser.parse_args()
