@@ -68,6 +68,18 @@ DEFAULT_ASR_MULTIMODAL_ENGINE_DIR = (
 ZH_LONG_04_GT = (
     "科学家们可以得出结论：暗物质对其他暗物质的影响方式与普通物质相同。")
 
+# Scenario G — real auto-rotation test. Concat of `zh-long-04` (12.9s, 16kHz
+# Chinese) + 1 s digital silence + `nx-loopback-pass-p3` (3.2s, "一二三四五
+# 六七八九十。"), total 17.1 s. Deliberately exceeds kVadTriggerSec=12.0 s so
+# the worker must auto-segment. Uses PCM streaming (pcm_b64) so the VAD
+# splitter has audio data to find the silence boundary; the mel-only path
+# falls back to projection-only rotation that doesn't fire below the 15s
+# hard limit for our short-Chinese chunks.
+ZH_LONG_ROTATION_WAV = "docs/audio-evidence/zh-long-rotation-test-2026-05-14.wav"
+ZH_LONG_ROTATION_GT = (
+    "科学家们可以得出结论：暗物质对其他暗物质的影响方式与普通物质相同。"
+    "一二三四五六七八九十。")
+
 
 # ---------------------------------------------------------------------------
 # Mel preprocessing (copied from test_m3_step2_spike.py).
@@ -449,6 +461,64 @@ def scenario_d_autosegment(worker: Worker, audio: np.ndarray, mel_dir: Path,
     }
 
 
+def scenario_g_pcm_rotation(worker: Worker, audio: np.ndarray,
+                             hop_sec: float = HOP_SEC) -> dict:
+    """Real auto-rotation test (M5 commit-4) — PCM streaming + rotation driver.
+
+    Sends a ~17s WAV through the worker as base64 float32 PCM in 500ms hops.
+    Because audio_sec crosses kVadTriggerSec=12.0 s, the worker invokes
+    AudioVadSplitter on session.pcmAccum and rotates at the silence boundary
+    (inserted at 12.9–13.9 s). On `segment_rotation` the driver trims its
+    accumulator by carryover_sec and continues, mirroring scenario D's
+    rotation-aware semantics. Used by gate G to verify the rotation mechanism
+    actually fires (unlike scenario D which receives mel-only chunks and
+    cannot exercise VAD-aligned rotation).
+    """
+    duration = len(audio) / SAMPLE_RATE
+    hop_samples = int(SAMPLE_RATE * hop_sec)
+    sid = f"scen_g_{uuid.uuid4().hex[:6]}"
+    worker.send({"event": "begin", "id": sid, "sample_rate": SAMPLE_RATE,
+                 "chunk_size_sec": hop_sec, "audio_format": "pcm"})
+    ack = worker.recv("scen_g_begin")
+    assert ack.get("event") == "begin_ack", ack
+
+    start_offset_samples = 0
+    consumed_samples = 0
+    rotations = 0
+    final_resp: Optional[dict] = None
+    hop_idx = 0
+    while consumed_samples < len(audio):
+        new_end = min(consumed_samples + hop_samples, len(audio))
+        is_last = (new_end >= len(audio))
+        consumed_samples = new_end
+        slice_audio = audio[start_offset_samples:new_end].astype(np.float32)
+        audio_sec = len(slice_audio) / SAMPLE_RATE
+        pcm_b64 = base64.b64encode(slice_audio.tobytes()).decode("ascii")
+        worker.send({"event": "chunk", "id": sid, "pcm_b64": pcm_b64,
+                     "audio_sec": audio_sec, "last": is_last})
+        resp = worker.recv(f"scen_g_h{hop_idx}")
+        ev_type = resp.get("event")
+        if ev_type == "segment_rotation":
+            rotations += 1
+            carryover_sec = resp.get("carryover_sec", 1.0)
+            carry_samples = int(carryover_sec * SAMPLE_RATE)
+            start_offset_samples = max(0, new_end - carry_samples)
+        elif ev_type == "final":
+            final_resp = resp
+        elif ev_type == "partial":
+            pass
+        else:
+            raise RuntimeError(f"unexpected event in scen_g: {resp}")
+        hop_idx += 1
+    return {
+        "duration_s": duration,
+        "rotations": rotations,
+        "final": final_resp,
+        "text": strip_language_prefix(final_resp.get("text", "")) if final_resp else "",
+        "segment_count": final_resp.get("segment_count") if final_resp else None,
+    }
+
+
 def scenario_e_errors(args: argparse.Namespace) -> dict:
     """Error paths: malformed JSON, unknown event, oversized chunk.
 
@@ -555,6 +625,17 @@ def main() -> int:
                              "meaningful comparison. Pass an explicit None "
                              "via env-driven override only when re-running "
                              "the legacy mechanism-only soft path.")
+    parser.add_argument("--rotation-wav", default=None,
+                        help="WAV >16s for scenario G (PCM streaming auto-rotation "
+                             "test). Defaults to docs/audio-evidence/zh-long-rotation-"
+                             "test-2026-05-14.wav when present and PCM mode is enabled.")
+    parser.add_argument("--rotation-baseline-text", default=None,
+                        help="Ground-truth transcript for --rotation-wav. Auto-applied "
+                             "to ZH_LONG_ROTATION_GT when the basename matches.")
+    parser.add_argument("--g-lcs-hard-gate", type=float, default=0.85,
+                        help="Scenario G LCS hard-gate threshold. Default 0.85 — "
+                             "lower than D's 0.95 because cross-segment artifacts "
+                             "(decode at silence boundary) are expected.")
     parser.add_argument("--results-md", default=None)
     parser.add_argument("--results-json", default=None)
     args = parser.parse_args()
@@ -700,6 +781,47 @@ def main() -> int:
               f"lcs_vs_A={f_result['lcs_vs_baseline_A']:.3f}",
               file=sys.stderr, flush=True)
 
+    # Scenario G — real auto-rotation via PCM streaming. Skipped if PCM mode
+    # is disabled (no --mel-settings) OR no rotation WAV is supplied/found.
+    g_result: Optional[dict] = None
+    rotation_wav_path: Optional[Path] = None
+    if args.rotation_wav:
+        rotation_wav_path = Path(args.rotation_wav)
+    elif args.mel_settings and args.mel_filters:
+        # Auto-pick canonical rotation WAV if it's present in the tree.
+        default_rot = Path(ZH_LONG_ROTATION_WAV)
+        if not default_rot.is_absolute():
+            # Resolve relative to repo root (one level above this script).
+            default_rot = Path(__file__).resolve().parent.parent / ZH_LONG_ROTATION_WAV
+        if default_rot.exists():
+            rotation_wav_path = default_rot
+    rotation_gt = args.rotation_baseline_text
+    if rotation_wav_path and not rotation_gt:
+        if "zh-long-rotation" in rotation_wav_path.name:
+            rotation_gt = ZH_LONG_ROTATION_GT
+            print("[scen_g] auto-applied ZH_LONG_ROTATION_GT as --rotation-baseline-text",
+                  file=sys.stderr, flush=True)
+    if rotation_wav_path and args.mel_settings and args.mel_filters:
+        rot_audio_raw, rot_sr = wav_to_audio(rotation_wav_path)
+        rot_audio = resample_to_16k(rot_audio_raw, rot_sr)
+        print(f"[scen_g] PCM rotation on {len(rot_audio)/SAMPLE_RATE:.2f}s audio ...",
+              file=sys.stderr, flush=True)
+        w = Worker(args)
+        try:
+            g_result = scenario_g_pcm_rotation(w, rot_audio)
+        finally:
+            w.close()
+        g_result["lcs_vs_gt"] = (
+            lcs_similarity(g_result["text"], rotation_gt) if rotation_gt else None)
+        g_result["ground_truth"] = rotation_gt
+        g_result["wav"] = str(rotation_wav_path)
+        results["scenarios"]["G_pcm_rotation"] = g_result
+        print(f"[scen_g] rotations={g_result['rotations']} "
+              f"segment_count={g_result['segment_count']} "
+              f"text={g_result['text']!r} "
+              f"lcs={g_result['lcs_vs_gt'] if g_result['lcs_vs_gt'] is not None else 'n/a'}",
+              file=sys.stderr, flush=True)
+
     # Gate evaluation.
     gates = {
         "A_oneshot_ok": a["ok"],
@@ -729,6 +851,12 @@ def main() -> int:
     }
     if f_result is not None:
         gates["F_pcm_lcs_ge_0.95"] = f_result["lcs_vs_baseline_B"] >= 0.95
+    if g_result is not None:
+        gates["G_rotations_ge_1"] = g_result["rotations"] >= 1
+        gates["G_segment_count_ge_2"] = (g_result.get("segment_count") or 0) >= 2
+        if g_result.get("lcs_vs_gt") is not None:
+            gates[f"G_lcs_ge_{args.g_lcs_hard_gate}"] = (
+                g_result["lcs_vs_gt"] >= args.g_lcs_hard_gate)
     results["gates"] = gates
     # Hard-failing gates exclude SOFT ones (suffix `_soft`).
     hard_gates = {k: v for k, v in gates.items() if not k.endswith("_soft")}
@@ -793,6 +921,21 @@ def main() -> int:
     out.append(f"- LCS vs baseline_x1: {d['lcs_vs_baseline_x1']:.3f}")
     out.append(f"- LCS best: {d['lcs_best']:.3f}")
     out.append("")
+    if g_result is not None:
+        out.append("## G — PCM streaming auto-rotation (real VAD-aligned test)")
+        out.append("")
+        out.append(f"- wav: `{g_result.get('wav')}`")
+        out.append(f"- duration: {g_result['duration_s']:.2f} s")
+        out.append(f"- rotations: {g_result['rotations']}")
+        out.append(f"- segment_count: {g_result['segment_count']}")
+        out.append(f"- text: `{g_result['text']}`")
+        if g_result.get("ground_truth"):
+            out.append(f"- ground truth: `{g_result['ground_truth']}`")
+            if g_result.get("lcs_vs_gt") is not None:
+                out.append(f"- LCS vs GT: {g_result['lcs_vs_gt']:.3f}")
+            else:
+                out.append("- LCS vs GT: n/a")
+        out.append("")
     out.append("## E — error paths")
     out.append("")
     for k, v in e.items():
