@@ -8,6 +8,47 @@
 
 **Qwen3-ASR 没法做真正的 sub-300ms 首词低延迟流式 ASR，除非重训 encoder。但用 chunk-and-confirm + prefix prompt 机制，可以做到 ≤ 500ms 的「说完到出文本」延迟，这才是产品 UX 真正关心的指标。**
 
+## 0.5 First-time setup checklist（不懂项目的新人照走）
+
+### 仓库布局（reproducer 假设 sibling clone）
+
+```
+~/project/
+  ├── TensorRT-Edge-LLM        (NVIDIA fork, branch: qwen3-tts-highperf-runtime-w8a16)
+  ├── qwen3-edgellm-jetson     (本项目, branch: main 或最新 streaming-asr feature 分支)
+  └── jetson-voice             (产品 serving repo, branch: qwen3tts-accurate-20260507)
+```
+
+### 一键 reproduce（推荐）
+
+```bash
+bash qwen3-edgellm-jetson/scripts/reproduce_qwen3_highperf.sh
+```
+
+成功末尾输出：`REPRODUCE_PASS`。如需 commit 级 pinning：
+
+```bash
+EDGELLM_COMMIT=<sha> \
+QWEN3_EDGELLM_JETSON_COMMIT=<sha> \
+JETSON_VOICE_COMMIT=<sha> \
+bash qwen3-edgellm-jetson/scripts/reproduce_qwen3_highperf.sh
+```
+
+### 故障检查
+
+- cmake configure 报 `EdgeLLM ... missing streaming-asr APIs (AppendPrefillStatus...)`：
+  → TensorRT-Edge-LLM 不在正确分支或 build dir 错了。检查 `git rev-parse HEAD` 是否在 `qwen3-tts-highperf-runtime-w8a16` 分支上，且 `build/`（或 `build_sm87/`）是最新 build。
+- smoke test `FAIL — service did not return non-empty text`：
+  → Engine 路径或 plugin ABI 不匹配。检查 `engines/orin-nx/highperf*/asr_thinker_full_fp8embed/` 是否存在且非空，docker logs 看 plugin attribute 注册。
+- 多个 `build_*` 目录在 TensorRT-Edge-LLM 下：
+  → 历史实验产物，删掉只保留 `build/` 即可，避免 cmake auto-discovery 选错。
+
+### 关键约束
+
+- **Worker C++ 源**：单一 canonical 在 `qwen3-edgellm-jetson/native/edgellm_voice_worker/`，jetson-voice 仅引用（见 §7.10）。不要在 jetson-voice 仓里改 worker 代码。
+- **Engine artifacts**：从 HF（`harvestsu/qwen3-edgellm-jetson-artifacts`）下载，不本地 build（除非升级 `max_input_len`，见 §1.5）。
+- **EdgeLLM plugin**：build_sm87/libNvInfer_edgellm_plugin.so.1.0（70.7 MB）—— 仅这一个变体注册了 `qkv_scales` attribute。不要用 generic 编译产物（43 MB 那个）。
+
 ## 1. 背景与关键架构事实
 
 ### 1.1 Qwen3-ASR 不是天生流式的

@@ -60,6 +60,14 @@ DEFAULT_ASR_ENGINE_DIR = (
 DEFAULT_ASR_MULTIMODAL_ENGINE_DIR = (
     "/opt/models/qwen3-edgellm/engines/orin-nx/highperf/asr_audio_encoder")
 
+# Curated ground-truth transcript for `docs/audio-evidence/zh-long-04-2026-05-13.wav`.
+# Auto-applied as scenario-D `--long-baseline-text` when the supplied --long-wav
+# basename contains `zh-long-04`. Lets `bash scripts/test_streaming_worker.py
+# ... --long-wav .../zh-long-04-...wav` evaluate the M5 hard gate without the
+# caller having to remember the exact transcript.
+ZH_LONG_04_GT = (
+    "科学家们可以得出结论：暗物质对其他暗物质的影响方式与普通物质相同。")
+
 
 # ---------------------------------------------------------------------------
 # Mel preprocessing (copied from test_m3_step2_spike.py).
@@ -550,6 +558,16 @@ def main() -> int:
     parser.add_argument("--results-md", default=None)
     parser.add_argument("--results-json", default=None)
     args = parser.parse_args()
+
+    # P1 D-gate auto-curation: when caller passes the canonical zh-long-04 WAV
+    # but no --long-baseline-text, fill in the curated GT so the D hard-gate
+    # path triggers automatically. Prevents drift between this driver and the
+    # commit recipe (docs/plans/m5-test-wavs.md row).
+    if args.long_wav and not args.long_baseline_text:
+        if "zh-long-04" in Path(args.long_wav).name:
+            args.long_baseline_text = ZH_LONG_04_GT
+            print(f"[scen_d] auto-applied ZH_LONG_04_GT as --long-baseline-text",
+                  file=sys.stderr, flush=True)
 
     mel_dir = Path(args.mel_dir)
     mel_dir.mkdir(parents=True, exist_ok=True)

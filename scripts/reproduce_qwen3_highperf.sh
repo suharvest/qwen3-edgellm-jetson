@@ -70,6 +70,13 @@ EDGELLM="$WORKSPACE/TensorRT-Edge-LLM"
 QEJ="$WORKSPACE/qwen3-edgellm-jetson"
 JV="$WORKSPACE/jetson-voice"
 
+# Optional commit-hash pinning. When set, each repo is checked out at the exact
+# commit AFTER the branch-tip fetch — useful for release reproduction where
+# branch tip may drift. Empty (default) keeps current branch-tip behavior.
+EDGELLM_COMMIT="${EDGELLM_COMMIT:-}"
+QWEN3_EDGELLM_JETSON_COMMIT="${QWEN3_EDGELLM_JETSON_COMMIT:-}"
+JETSON_VOICE_COMMIT="${JETSON_VOICE_COMMIT:-}"
+
 # ---------------------------------------------------------------------------
 log "step 1/7: ensure three repos at the validated branches"
 mkdir -p "$WORKSPACE"
@@ -82,6 +89,13 @@ for spec in "${!REPOS[@]}"; do
   path="${spec%%:*}"
   branch="${spec##*:}"
   url="${REPOS[$spec]}"
+  # Per-repo commit pin (empty → branch tip).
+  case "$path" in
+    "$EDGELLM") pin="$EDGELLM_COMMIT" ;;
+    "$QEJ")     pin="$QWEN3_EDGELLM_JETSON_COMMIT" ;;
+    "$JV")      pin="$JETSON_VOICE_COMMIT" ;;
+    *)          pin="" ;;
+  esac
   if [ ! -d "$path/.git" ]; then
     log "  cloning $url -> $path"
     git clone "$url" "$path" || die "clone $url"
@@ -95,7 +109,11 @@ for spec in "${!REPOS[@]}"; do
     fi
     # Best-effort fast-forward; don't blow up if user has local edits.
     git pull --ff-only --quiet 2>/dev/null || log "  $path: pull skipped (local edits or no upstream)"
-    echo "  $path @ $(git rev-parse --short HEAD) ($branch)"
+    if [ -n "$pin" ]; then
+      log "  $path: pinning to $pin"
+      git checkout --quiet "$pin" || die "pin checkout $pin in $path"
+    fi
+    echo "  $path @ $(git rev-parse --short HEAD) ($branch${pin:+, pinned})"
   )
 done
 
@@ -223,4 +241,36 @@ if [ $SKIP_VERIFY -eq 0 ]; then
   if [ $RC -ne 0 ]; then exit $RC; fi
 fi
 
+# -----------------------------------------------------------------------
+# Smoke test: confirm the freshly-deployed worker can complete a single
+# one-shot ASR round-trip against the docker service. Catches "everything
+# compiled but engine/plugin ABI mismatch / weights missing" failure modes
+# that the artifact verify alone doesn't catch.
+# -----------------------------------------------------------------------
+if [ $SKIP_VERIFY -eq 0 ]; then
+  log "smoke: one-shot ASR via deployed service on :$SERVICE_PORT"
+  smoke_audio=$(find "$QEJ/docs/audio-evidence" \
+      \( -name 'nano-official-*.wav' -o -name 'nx-highperf-*.wav' \) \
+      2>/dev/null | head -1)
+  if [ -n "$smoke_audio" ]; then
+    set +e
+    smoke_resp=$(curl -fsS -m 30 -X POST -F "file=@$smoke_audio" \
+        "http://localhost:${SERVICE_PORT}/asr" 2>&1)
+    smoke_rc=$?
+    set -e
+    if [ $smoke_rc -ne 0 ] || ! echo "$smoke_resp" | python3 -c "import sys,json
+d=json.load(sys.stdin)
+t=(d.get('text') or d.get('transcript') or '').strip()
+assert t, 'empty text'" 2>/dev/null; then
+      log "smoke: FAIL — service did not return non-empty text"
+      log "smoke: response: $smoke_resp"
+      exit 1
+    fi
+    log "smoke: PASS — '${smoke_resp:0:120}...'"
+  else
+    log "smoke: SKIPPED — no audio sample found under docs/audio-evidence/"
+  fi
+fi
+
 log "All reproduction checks passed. Service is live at http://localhost:${SERVICE_PORT}"
+echo "REPRODUCE_PASS"
