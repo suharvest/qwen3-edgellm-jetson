@@ -477,9 +477,9 @@ def scenario_e_errors(args: argparse.Namespace) -> dict:
                 "chunk_size_sec": 0.5})
         ack = w.recv("e3_begin")
         assert ack.get("event") == "begin_ack", ack
-        # audio_sec > 7.0 (worker's kSingleChunkHardLimitSec) → chunk_too_long
+        # audio_sec > 15.0 (worker's kSingleChunkHardLimitSec, P1 thinker v2) → chunk_too_long
         w.send({"event": "chunk", "id": "e3", "mel_path": str(mel_path),
-                "audio_sec": 8.0, "last": False})
+                "audio_sec": 16.0, "last": False})
         resp = w.recv("e3_chunk")
         results["chunk_too_long"] = {
             "got": resp,

@@ -78,20 +78,22 @@ struct Args
 // is refused with {"event":"error","error":"session_already_active"}.
 // ---------------------------------------------------------------------------
 
-// §15.5.1 — engine cap is max_input_len=128. Per-hop input budget breakdown
+// §15.5.1 — engine cap is max_input_len=256 (rebuilt P1, highperf-v2/
+// asr_thinker_full_fp8embed). Per-hop input budget breakdown
 // (audio_tokens + prompt_overhead + audio_bos/eos). 13 audio tokens/s is the
 // Spike A measurement. Prompt overhead ~32 tokens for the highperf chat
 // template. Reserve 8 tokens as safety margin.
-constexpr int32_t kEngineMaxInputLen = 128;
+constexpr int32_t kEngineMaxInputLen = 256;
 constexpr int32_t kPromptOverheadTokens = 32;
 constexpr int32_t kAudioBosEosTokens = 2;
 constexpr int32_t kInputSafetyMargin = 8;
 constexpr double kAudioTokensPerSec = 13.0;
 //! Hard refuse if any single chunk's audio_sec exceeds this. Set above the
-//! per-hop cap so auto-segmentation has a window to fire first. Engine math:
-//! audio cap = (128 - 8 - 32 - 2) / 13 ≈ 6.6 s; we hard-refuse at 7.0 s to
-//! leave a small margin and reserve 5.0–6.6 s for the auto-segment path.
-constexpr double kSingleChunkHardLimitSec = 7.0;
+//! per-hop cap so auto-segmentation has a window to fire first. Engine math
+//! at max_input_len=256: audio cap = (256 - 8 - 32 - 2) / 13 ≈ 16.5 s; we
+//! hard-refuse at 15.0 s to leave ~1.5 s margin for prompt/jitter and reserve
+//! the upper band for the auto-segment path.
+constexpr double kSingleChunkHardLimitSec = 15.0;
 constexpr double kCarryoverSec = 1.0;              //!< Segment boundary keeps last N seconds of audio.
 constexpr int64_t kIdleTimeoutMs = 30000;          //!< Force-close session after this much inactivity.
 
